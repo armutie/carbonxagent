@@ -3,9 +3,13 @@ import requests
 import time
 
 # Streamed response emulator
-def response_generator(prompt):
+def response_generator(prompt, history):
     try:
-        response = requests.post("http://127.0.0.1:8000/chat", json={"query": prompt})
+        payload = {
+            "query": prompt,
+            "history": history  # List of {"role": "user/assistant", "content": "text"}
+        }
+        response = requests.post("http://127.0.0.1:8000/chat", json=payload)
         response.raise_for_status()  # Raises exception for non-200 codes
         answer = response.json()["response_content"]
     except requests.RequestException as e:
@@ -27,16 +31,16 @@ for message in st.session_state.messages:
         st.markdown(message["content"])
 
 # Accept user input
-if query := st.chat_input("Ask about carbon emissions reduction:"):
+if query := st.chat_input("Ask about carbon emissions reduction", accept_file=True, file_type=["pdf"]):
     # Add user message to chat history
-    st.session_state.messages.append({"role": "user", "content": query})
+    st.session_state.messages.append({"role": "user", "content": query.text})
     # Display user message in chat message container
     with st.chat_message("user"):
-        st.markdown(query)
+        st.markdown(query.text)
 
     # Display assistant response in chat message container
     with st.chat_message("assistant"):
-        streamed_response = st.write_stream(response_generator(query))
+        streamed_response = st.write_stream(response_generator(query.text, st.session_state.messages))
     
     # Add assistant response to chat history (join the streamed list into a string)
     full_response = "".join(streamed_response)
