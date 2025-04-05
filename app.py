@@ -3,27 +3,44 @@ import requests
 import time
 
 # Streamed response emulator
+# def response_generator(prompt, history):
+#     try:
+#         payload = {
+#             "query": prompt,
+#             "history": history  # List of {"role": "user/assistant", "content": "text"}
+#         }
+#         response = requests.post("http://127.0.0.1:8000/chat", json=payload)
+#         response.raise_for_status()  # Raises exception for non-200 codes
+#         answer = response.json()["response_content"]
+#     except requests.RequestException as e:
+#         answer = f"Error: {str(e)}"  # Catches 422, 500, or network issues
+    
+#     for word in answer.split():
+#         yield word + " "
+#         time.sleep(0.05)
+
 def response_generator(prompt, history):
     try:
         payload = {
             "query": prompt,
-            "history": history  # List of {"role": "user/assistant", "content": "text"}
+            "history": history
         }
         response = requests.post("http://127.0.0.1:8000/chat", json=payload)
-        response.raise_for_status()  # Raises exception for non-200 codes
+        response.raise_for_status()
         answer = response.json()["response_content"]
     except requests.RequestException as e:
-        answer = f"Error: {str(e)}"  # Catches 422, 500, or network issues
+        answer = f"Error: {str(e)}"
     
-    for word in answer.split():
-        yield word + " "
-        time.sleep(0.05)
+    # Split by newlines to maintain markdown formatting
+    for line in answer.split("\n"):
+        yield line + "\n"
+        time.sleep(0.1)  # You can adjust the delay as needed
 
 st.title("CarbonXAgent")
 
 # Initialize chat history
 if "messages" not in st.session_state:
-    st.session_state.messages = []
+    st.session_state.messages = [{"role": "assistant", "content": "Hi! I'm excited to figure out your company operations in detail! What information do you have for me? "}]
 
 # Display chat messages from history on app rerun
 for message in st.session_state.messages:
