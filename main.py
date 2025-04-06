@@ -4,7 +4,7 @@ from dotenv import load_dotenv
 from pydantic import BaseModel
 from typing import List, Dict
 from textwrap import dedent
-from initiatives import process_summary
+from initiatives.process import process_summary
 import json
 
 
@@ -15,6 +15,8 @@ groq_client = Groq()
 class ChatRequest(BaseModel):
     query: str
     history: List[Dict[str, str]]
+    user_id: str
+    file_text: str = ""
 
 conversation_system_prompt = dedent("""
         You’re a sharp assistant gathering detailed info about a company to calculate its carbon emissions. 
@@ -36,6 +38,8 @@ Then say 'FINAL DESCRIPTION: [summary]' (no asterisks) to end.
 def chat(request: ChatRequest):
     query = request.query
     history = request.history
+    user_id = request.user_id
+    file_text = request.file_text
     try:
         messages = [{"role": "system", "content": conversation_system_prompt}] + history + [{"role": "user", "content": query}]
         response = groq_client.chat.completions.create(
@@ -47,10 +51,13 @@ def chat(request: ChatRequest):
 
         if "FINAL DESCRIPTION:" in answer:
             summary = answer.split("FINAL DESCRIPTION:")[1].strip()
-            result = process_summary(summary)
-            parsed = json.loads(result[0])
-            emissions = json.loads(result[1])
-            suggestions = json.loads(result[2])
+            result = process_summary(summary, user_id, file_text)
+            try:
+                parsed = json.loads(result[0])
+                emissions = json.loads(result[1])
+                suggestions = json.loads(result[2])
+            except Exception as e:
+                return {"status_code": 501, "response_content": "Something is wrong with JSON loading"}
 
             # Format cleanly
             answer = (
