@@ -21,7 +21,7 @@ def clean_outputs(full_list):
         cleaned_outputs.append(cleaned_output) 
     return cleaned_outputs
 
-def process_summary(summary: str, user_id: str, file_text: str = ""):
+def process_summary(summary: str, user_id: str):
     agents = CarbonAgents()
     tasks = CarbonTasks()
 

@@ -1,11 +1,14 @@
-from fastapi import FastAPI
+from fastapi import FastAPI, Form, UploadFile
 from groq import Groq
 from dotenv import load_dotenv
 from pydantic import BaseModel
 from typing import List, Dict
 from textwrap import dedent
 from initiatives.process import process_summary
+from initiatives.rag import update_vector_store
 import json
+import os
+from datetime import datetime
 
 
 load_dotenv()
@@ -16,7 +19,6 @@ class ChatRequest(BaseModel):
     query: str
     history: List[Dict[str, str]]
     user_id: str
-    file_text: str = ""
 
 conversation_system_prompt = dedent("""
         You’re a sharp assistant gathering detailed info about a company to calculate its carbon emissions. 
@@ -27,6 +29,7 @@ Your goal is to collect:
 Chat naturally, asking one focused question at a time based on what’s missing. Start with: “What’s a major emission source in your operations?” after getting the company type. 
 Push for numbers (e.g., 'How much diesel?'). If the user’s vague (e.g., ‘lots’), ask ‘Can you estimate a number?’ 
 Convert daily to monthly if needed (e.g., 100 gallons/day → 3000 gallons/month). 
+The user has the ability to send files to you.
 Keep asking ‘Any other sources?’ until they say no. 
 ONLY use details the user provides—do NOT invent numbers or sources, even if plausible. Stick strictly to their input unless converting units. 
 When you have the company type and at least one quantified source (all mentioned sources need numbers), 
@@ -39,7 +42,6 @@ def chat(request: ChatRequest):
     query = request.query
     history = request.history
     user_id = request.user_id
-    file_text = request.file_text
     try:
         messages = [{"role": "system", "content": conversation_system_prompt}] + history + [{"role": "user", "content": query}]
         response = groq_client.chat.completions.create(
@@ -51,7 +53,7 @@ def chat(request: ChatRequest):
 
         if "FINAL DESCRIPTION:" in answer:
             summary = answer.split("FINAL DESCRIPTION:")[1].strip()
-            result = process_summary(summary, user_id, file_text)
+            result = process_summary(summary, user_id)
             try:
                 parsed = json.loads(result[0])
                 emissions = json.loads(result[1])
@@ -72,8 +74,20 @@ def chat(request: ChatRequest):
     "\n".join([f"- **{s['initiative']}**\n  *{s['description']}*\n  **Impact:** {s['impact']}\n  **Track with:** {', '.join(s['metrics'])}"
                 for s in suggestions])
 )
-
-
         return {"status_code": 200, "response_content": answer}
     except Exception as e:
         return {"status_code": 500, "response_content": f"Error: {str(e)}"}
+    
+@app.post("/update_vector")
+async def update_vector(user_id: str = Form(...), file: UploadFile = None):
+    if not file:
+        return {"status_code": 400, "response_content": "No file provided"}
+    os.makedirs("uploads", exist_ok=True)
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    filename = f"uploads/user_{user_id}_{timestamp}.txt"
+    file_content = await file.read()
+    with open(filename, "wb") as f:
+        f.write(file_content)
+    file_text = file_content.decode("utf-8")
+    update_vector_store(user_id, file_text)
+    return {"status_code": 200, "response_content": "Vector store updated"}  # No need to return file_text
