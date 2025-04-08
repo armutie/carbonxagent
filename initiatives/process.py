@@ -1,10 +1,8 @@
 import re
 from initiatives.agents import CarbonAgents
 from initiatives.tasks import CarbonTasks
-# from agents import CarbonAgents
-# from tasks import CarbonTasks
 from crewai import Task, Crew
-from initiatives.rag import get_rag_context
+import requests
 
 def remove_code_fences(text):
     # Removes all code block markers like ```json or ```
@@ -25,7 +23,8 @@ def process_summary(summary: str, user_id: str):
     agents = CarbonAgents()
     tasks = CarbonTasks()
 
-    file_context = get_rag_context(summary, user_id)
+    rag_response = requests.get(f"http://127.0.0.1:8000/rag?summary={summary}&user_id={user_id}")
+    file_context = rag_response.json().get("response_content", "")
 
     parse_task = Task(
         description=tasks.parse_description(summary, file_context),

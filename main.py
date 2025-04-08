@@ -5,15 +5,17 @@ from pydantic import BaseModel
 from typing import List, Dict
 from textwrap import dedent
 from initiatives.process import process_summary
-from initiatives.rag import update_vector_store
 import json
-import os
 from datetime import datetime
+import chromadb
+from sentence_transformers import SentenceTransformer
 
 
 load_dotenv()
 app = FastAPI()
 groq_client = Groq()
+client = chromadb.PersistentClient(path="./chroma_db")
+model = SentenceTransformer('all-mpnet-base-v2')
 
 class ChatRequest(BaseModel):
     query: str
@@ -82,12 +84,25 @@ def chat(request: ChatRequest):
 async def update_vector(user_id: str = Form(...), file: UploadFile = None):
     if not file:
         return {"status_code": 400, "response_content": "No file provided"}
-    os.makedirs("uploads", exist_ok=True)
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    filename = f"uploads/user_{user_id}_{timestamp}.txt"
+    if file.size > 10 * 1024 * 1024:  # 10MB limit
+        return {"status_code": 400, "response_content": "File too large (>10MB)"}
     file_content = await file.read()
-    with open(filename, "wb") as f:
-        f.write(file_content)
     file_text = file_content.decode("utf-8")
-    update_vector_store(user_id, file_text)
-    return {"status_code": 200, "response_content": "Vector store updated"}  # No need to return file_text
+    collection = client.get_or_create_collection(f"user_{user_id}")
+    embedding = model.encode(file_text).tolist()
+    collection.add(
+        documents=[file_text],
+        embeddings=[embedding],
+        ids=[f"{user_id}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"]
+    )
+
+#TODO: Summary might get too long for URL parameters, need to deal with this issue
+@app.get("/rag")
+def get_rag_context(summary: str, user_id: str):
+    collection = client.get_collection(f"user_{user_id}")
+    if not collection:
+        return {"status_code": 200, "response_content": ""}
+    embedding = model.encode(summary).tolist()
+    results = collection.query(query_embeddings=[embedding], n_results=3)
+    response_content = "\n".join(results["documents"][0]) if results["documents"] else ""
+    return {"status_code": 200, "response_content": response_content}
