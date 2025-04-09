@@ -32,28 +32,52 @@ if "uploaded_files" not in st.session_state:
 if "user_id" not in st.session_state:
     st.session_state.user_id = "789"
 
+if "admin" not in st.session_state:
+    st.session_state.admin = False
+
 # Initialize chat history
 if "messages" not in st.session_state:
     st.session_state.messages = [{"role": "assistant", "content": "Hi! I'm excited to figure out your company operations in detail! What information do you have for me? "}]
 
-st.sidebar.markdown(
-    f"<h3 style='margin-top: -30px;'>Your User ID: {st.session_state.user_id}</h3>",
-    unsafe_allow_html=True
-)
+def check_admin_password():
+    if st.session_state.get("password_input") == "admin123":
+        st.session_state.admin = True
 
-user_id = st.sidebar.header("Upload Files")
-uploaded_files = st.sidebar.file_uploader(
-    "Add files to your knowledge base",
+if not st.session_state.admin:
+    st.sidebar.header("Upload Files")
+    
+    uploaded_files = st.sidebar.file_uploader(
+        "Add files to your knowledge base",
+        type=["txt"],
+        accept_multiple_files=True
+    )
+    
+    st.sidebar.text_input("Enter Admin Password", type="password",
+                            key="password_input", on_change=check_admin_password)
+    
+    password = "admin123"
+    if "password_input" in st.session_state and st.session_state.password_input:
+        if st.session_state.password_input == password:
+            st.sidebar.success("Logged in as admin!")
+        else:
+            st.sidebar.error("Incorrect password")
+else:
+    st.sidebar.header(":red[ADMIN PRIVILEGES]")
+
+    uploaded_files = st.sidebar.file_uploader(
+    "Add files to the CORE knowledge base",
     type=["txt"],
-    accept_multiple_files=True
-)
+    accept_multiple_files=True)
 
 if uploaded_files:
     for file in uploaded_files:
         if file.name not in st.session_state.uploaded_files:
             file_text = file.read().decode("utf-8") 
-            files = {"file": (file.name, file_text.encode(), "text/plain")}
-            data = {"user_id": st.session_state.user_id}
+            files = {"file": (file.name, file.getvalue(), "text/plain")}
+            data = {
+                "user_id": st.session_state.user_id,
+                "is_core": "true" if st.session_state.admin else "false"
+            }
             response = requests.post("http://127.0.0.1:8000/update_vector", files=files, data=data)
             if response.status_code == 200:
                 st.session_state.uploaded_files.append(file.name)
@@ -61,11 +85,6 @@ if uploaded_files:
                 st.session_state.messages.append({"role": "system", "content": f"{file.name} was added to the knowledge base."})
             else:
                 st.sidebar.write(f"Error saving {file.name}: {response.json().get('response_content', 'Unknown error')}")
-
-# st.sidebar.markdown(
-#     f"<small>Your User ID: {st.session_state.user_id}</small>",
-#     unsafe_allow_html=True
-# )
 
 # Display chat messages from history on app rerun
 for message in st.session_state.messages:
