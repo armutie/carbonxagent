@@ -15,6 +15,10 @@ from langchain.vectorstores import Chroma
 from langchain_core.messages import HumanMessage, AIMessage
 from langchain.text_splitter import RecursiveCharacterTextSplitter 
 from langchain_core.documents import Document
+from langchain_community.document_loaders import PyPDFLoader 
+import tempfile
+import os
+#pip install pypdf
 
 load_dotenv()
 
@@ -137,26 +141,52 @@ async def update_vector(user_id: str = Form(...), file: UploadFile = None, is_co
         file_content = await file.read()
         filename = file.filename
         collection_name = "core_db" if is_core.lower() == "true" else f"user_{user_id}"
+        print(f"Storing in collection: {collection_name}")
 
-        # Decode file content and create a LangChain Document
-        file_text = file_content.decode("utf-8")
-        document = Document(page_content=file_text, metadata={"filename": filename, "user_id": user_id})
+        if filename.lower().endswith(".pdf"):
+            with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp:
+                tmp.write(file_content)
+                tmp_path = tmp.name
+            try:
+                loader = PyPDFLoader(tmp_path)
+                docs = loader.load()  # Returns a list of Document objects, one per page
+                for doc in docs:
+                    doc.metadata.update({"filename": filename, "user_id": user_id})
+                print(f"Loaded {len(docs)} pages from {filename}")
+            finally:
+                os.unlink(tmp_path)  
+        else:
+            # Decode file content and create a LangChain Document
+            file_text = file_content.decode("utf-8")
+            docs = [Document(page_content=file_text, metadata={"filename": filename, "user_id": user_id})]
+            for doc in docs:
+                    doc.metadata.update({"filename": filename, "user_id": user_id})
+            print(f"Loaded text file {filename} with {len(file_text)} characters")
 
-        # Split the document into chunks
         text_splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=0)
-        docs = text_splitter.split_documents([document])
-        print(f"Split into {len(docs)} chunks")
-        for i, doc in enumerate(docs):
+        chunked_docs = text_splitter.split_documents(docs)
+        print(f"Split into {len(chunked_docs)} chunks")
+        for i, doc in enumerate(chunked_docs):
             print(f"Chunk {i+1}: {len(doc.page_content)} characters")
         db = Chroma(client=client, collection_name=collection_name, embedding_function=embeddings)
-        db.add_documents(docs)
+        batch_size = 50 
+        for i in range(0, len(chunked_docs), batch_size):
+            batch = chunked_docs[i:i + batch_size]
+            print(f"Adding batch {i // batch_size + 1} ({len(batch)} chunks)...")
+            db.add_documents(batch)
+            print(f"Batch {i // batch_size + 1} added")
 
-        return {"status_code": 200, "response_content": f"Added {filename} ({len(docs)} chunks) to {'core ' if is_core.lower() == 'true' else ''}datastore"}
+        print(f"Finished adding all {len(chunked_docs)} chunks")
+
+        return {"status_code": 200, "response_content": f"Added {filename} ({len(chunked_docs)} chunks) to {'core ' if is_core.lower() == 'true' else ''}datastore"}
     except UnicodeDecodeError:
+        print("error 1")
         return {"status_code": 400, "response_content": "File must be a valid UTF-8 text file"}
+        
     except Exception as e:
+        print(f"error {str(e)}")
         return {"status_code": 500, "response_content": f"Upload error: {str(e)}"}
-
+        
 # RAG endpoint with LangChain retriever
 @app.get("/rag")
 def get_rag_context(summary: str, user_id: str):
@@ -166,5 +196,17 @@ def get_rag_context(summary: str, user_id: str):
         docs = user_retriever.get_relevant_documents(summary)
         response_content = "\n".join([doc.page_content for doc in docs]) if docs else ""
         return {"status_code": 200, "response_content": response_content}
+    except Exception as e:
+        return {"status_code": 500, "response_content": f"Error: {str(e)}"}
+
+@app.get("/list_files")
+def list_files(collection_name: str):
+    try:
+        db = Chroma(client=client, collection_name=collection_name, embedding_function=embeddings)
+        results = db.get()
+        print(f"Collection {collection_name} has {len(results['documents'])} chunks")
+        filenames = set(meta["filename"] for meta in results["metadatas"] if "filename" in meta)
+        print(f"Found filenames: {filenames}")
+        return {"status_code": 200, "response_content": list(filenames)}
     except Exception as e:
         return {"status_code": 500, "response_content": f"Error: {str(e)}"}
