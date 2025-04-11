@@ -2,11 +2,22 @@ from crewai import Agent, LLM
 from textwrap import dedent
 from groq import Groq
 from dotenv import load_dotenv
+from .tools import CoreKnowledgeLookupTool, CustomCalculatorTool
+from langchain_openai import ChatOpenAI
 
 load_dotenv()
 groq_client = Groq()
 
 llm = LLM(model="groq/deepseek-r1-distill-llama-70b")
+llama_llm = LLM(model="groq/llama-3.3-70b-versatile")
+llama_fast_llm = LLM(model="groq/llama-3.3-70b-specdec")
+
+openai_llm = ChatOpenAI(
+            model="gpt-4o-mini", # Or "gpt-4-turbo", "gpt-3.5-turbo" etc.
+            temperature=0.7 # Optional: set temperature
+            # API key is typically read automatically from OPENAI_API_KEY env var
+        )
+
 
 class CarbonAgents:
 
@@ -21,14 +32,27 @@ class CarbonAgents:
         )
 
     def emissions_expert(self):
+        knowledge_tool_instance = CoreKnowledgeLookupTool()
+        calculator_tool_instance = CustomCalculatorTool()
+
+
         return Agent(
             role="Emissions Expert",
-            goal="Calculate total carbon emissions from provided data",
-            backstory="You’re a lone wolf who calculates emissions with the data you’re given—no help needed.",
-            tools=[],  
+            goal=dedent("""Calculate total carbon emissions based on structured data.
+                Before calculating, critically assess if you need specific information (like emission factors, calculation methodologies for unusual sources, or conversion constants) that isn't common knowledge or provided in the context.
+                If specific information is needed, formulate a precise question and use the 'Core Knowledge Lookup' tool ONCE for that piece of information.
+                Evaluate the retrieved information: Is it directly relevant and useful for *this calculation*?
+                If relevant, use it. If not relevant, or if the tool finds nothing, proceed using standard assumptions or clearly state the limitation/unhandled source in your output.
+                Do NOT use the tool speculatively or for general knowledge. Focus only on necessary data for the calculation. Avoid getting sidetracked by irrelevant details.
+                Output the results in the specified JSON format."""),
+            backstory=dedent("""\
+                You are a precise and efficient emissions calculation specialist. 
+                You rely on provided data and standard factors, but you know when to seek specific, necessary information using the knowledge lookup tool. 
+                You don't waste time on irrelevant lookups and focus solely on accurate calculation based on available, relevant data."""),
+            tools=[knowledge_tool_instance, calculator_tool_instance],  
             allow_delegation=False,  # Explicitly disable coworker delegation
             verbose=True,
-            llm=llm
+            llm=openai_llm
         )
 
     def sustainability_advisor(self):
