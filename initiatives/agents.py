@@ -13,9 +13,8 @@ llama_llm = LLM(model="groq/llama-3.3-70b-versatile")
 llama_fast_llm = LLM(model="groq/llama-3.3-70b-specdec")
 
 openai_llm = ChatOpenAI(
-            model="gpt-4o-mini", # Or "gpt-4-turbo", "gpt-3.5-turbo" etc.
-            temperature=0.7 # Optional: set temperature
-            # API key is typically read automatically from OPENAI_API_KEY env var
+            model="gpt-4o-mini", 
+            temperature=0.7 
         )
 
 
@@ -50,7 +49,7 @@ class CarbonAgents:
                 You rely on provided data and standard factors, but you know when to seek specific, necessary information using the knowledge lookup tool. 
                 You don't waste time on irrelevant lookups and focus solely on accurate calculation based on available, relevant data."""),
             tools=[knowledge_tool_instance, calculator_tool_instance],  
-            allow_delegation=False,  # Explicitly disable coworker delegation
+            allow_delegation=False, 
             verbose=True,
             llm=openai_llm
         )

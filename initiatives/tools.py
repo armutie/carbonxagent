@@ -1,18 +1,11 @@
 from crewai.tools import BaseTool #pip install crewai_tools
-from langchain.vectorstores import Chroma
-from langchain.embeddings import HuggingFaceEmbeddings
-import chromadb
 import re
 from dotenv import load_dotenv
+from rag import get_retriever
 
 load_dotenv()
 
-# --- Re-use or initialize ChromaDB components ---
-client = chromadb.PersistentClient(path="./chroma_db")
-embeddings = HuggingFaceEmbeddings(model_name="all-mpnet-base-v2")
-core_db = Chroma(client=client, collection_name="core_db", embedding_function=embeddings)
-# Retrieve slightly more context if it's general knowledge
-core_retriever = core_db.as_retriever(search_type="similarity", search_kwargs={"k": 3})
+core_retriever = get_retriever("core_db")
 
 class CoreKnowledgeLookupTool(BaseTool):
     name: str = "Core Knowledge Lookup"
@@ -26,17 +19,11 @@ class CoreKnowledgeLookupTool(BaseTool):
     def _run(self, query: str) -> str:
         """Queries the core vector database for general information."""
         try:
-            # Maybe add a prefix to the query for better retrieval focus
-            # query = f"Regarding carbon emissions and sustainability: {query}"
             docs = core_retriever.get_relevant_documents(query)
-
             if not docs:
-                return "No specific information found in the core knowledge base for that query."
-
-            # Combine the content of the retrieved documents
+                return "No specific information found in the core knowledge base."
             context = "\n---\n".join([doc.page_content for doc in docs])
             return f"Retrieved context from core knowledge base related to '{query}':\n{context}"
-
         except Exception as e:
             return f"Error using CoreKnowledgeLookupTool for query '{query}': {str(e)}"
         
@@ -64,7 +51,7 @@ class CustomCalculatorTool(BaseTool):
 
             # 3. Check if the result is a number (int or float)
             if isinstance(result, (int, float)):
-                return str(result) # Return the result as a string
+                return str(result)
             else:
                 # Should not happen with basic math ops, but handles weird edge cases
                 return f"Error: Calculation for '{expression}' did not produce a number."

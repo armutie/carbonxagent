@@ -2,7 +2,7 @@ import re
 from initiatives.agents import CarbonAgents
 from initiatives.tasks import CarbonTasks
 from crewai import Task, Crew
-import requests
+from rag import get_retriever
 
 def remove_code_fences(text):
     # Removes all code block markers like ```json or ```
@@ -23,8 +23,12 @@ def process_summary(summary: str, user_id: str):
     agents = CarbonAgents()
     tasks = CarbonTasks()
 
-    rag_response = requests.get(f"http://127.0.0.1:8000/rag?summary={summary}&user_id={user_id}")
-    file_context = rag_response.json().get("response_content", "")
+    try:
+        user_retriever = get_retriever(f"user_{user_id}")
+        docs = user_retriever.get_relevant_documents(summary)
+        file_context = "\n".join([doc.page_content for doc in docs]) if docs else ""
+    except Exception as e:
+        file_context = f"Error retrieving user context: {str(e)}"
 
     parse_task = Task(
         description=tasks.parse_description(summary, file_context),

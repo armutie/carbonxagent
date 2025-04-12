@@ -1,18 +1,9 @@
-import os
 from dotenv import load_dotenv
-from textwrap import dedent
 
-# Load environment variables (like GROQ_API_KEY, SERPER_API_KEY if used)
 load_dotenv()
 
-# Adjust imports based on your project structure
-# If test_crew.py is in the root, and your initiatives code is in an 'initiatives' folder:
 from initiatives.agents import CarbonAgents
 from initiatives.tasks import CarbonTasks
-# If your tools are in a 'tools' folder at the root:
-# from tools.search_tools import SearchTools # Example if needed
-# from tools.calculator_tools import CalculatorTools # Example if needed
-# from initiatives.tools import CoreKnowledgeLookupTool # Example if needed
 
 from crewai import Task, Crew
 import chromadb
@@ -21,19 +12,14 @@ from langchain.embeddings import HuggingFaceEmbeddings
 
 TEST_SUMMARY = "A logistics company operating a fleet of 30 diesel trucks, with each truck consuming 800 gallons of diesel per month."
 TEST_USER_ID = "789"
-# For initial testing, we might bypass the user-specific RAG context.
-# If you MUST test with RAG, you'd need to add logic here to
-# directly query ChromaDB, similar to the /rag endpoint logic.
 TEST_FILE_CONTEXT = "" # Start with no extra file context for simplicity
 
 print("Simulating RAG lookup...")
 try:
     client = chromadb.PersistentClient(path="./chroma_db")
     embeddings = HuggingFaceEmbeddings(model_name="all-mpnet-base-v2")
-    # Use the TEST_USER_ID defined earlier
     user_db = Chroma(client=client, collection_name=f"user_{TEST_USER_ID}", embedding_function=embeddings)
     user_retriever = user_db.as_retriever(search_type="similarity", search_kwargs={"k": 3})
-    # Use the TEST_SUMMARY defined earlier
     docs = user_retriever.get_relevant_documents(TEST_SUMMARY)
     TEST_FILE_CONTEXT = "\n---\n".join([doc.page_content for doc in docs]) if docs else "No relevant user context found."
     print(f"Simulated RAG Context Length: {len(TEST_FILE_CONTEXT)}")
