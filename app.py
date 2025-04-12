@@ -9,9 +9,10 @@ def response_generator(prompt, history):
             "history": history,
             "user_id": st.session_state.user_id,
         }
-        response = requests.post("http://127.0.0.1:8000/chat", json=payload)
-        response.raise_for_status()
-        answer = response.json().get("response_content", "No response received")
+        with st.spinner(""):
+            response = requests.post("http://127.0.0.1:8000/chat", json=payload)
+            response.raise_for_status()
+            answer = response.json().get("response_content", "No response received")
     except requests.RequestException as e:
         answer = f"Error: {str(e)}"
     
