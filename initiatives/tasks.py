@@ -22,27 +22,36 @@ class CarbonTasks:
         """)
 
     def calculate_emissions_description(self):
-        return dedent("""
-            Use context emission sources to calculate total carbon emissions. Use these factors:
-- Diesel: 10.21 kg CO2e/gallon
-- Gasoline: 8.78 kg CO2e/gallon
-- Natural gas: 5.31 kg CO2e/therm
-- Propane: 5.31 kg CO2e/gallon
-- Coal: 2.86 kg CO2e/kg (convert tons to kg: tons * 1000 * 2.86)
-- Electricity: 0.4 kg CO2e/kWh (average; adjust per region if specified)
-For each source:
-1. If "fuel_total_monthly" exists, use: total_fuel * emission_factor.
-2. If "quantity" and "fuel_per_unit_monthly" exist, use: quantity * fuel_per_unit * emission_factor.
-3. If "quantity" and daily usage (e.g., "fuel_per_unit_daily") exist, convert to monthly: quantity * fuel_per_unit * 30 * emission_factor.
-4. Add to breakdown: {"source": "<type>", "emissions": <value>}.
-Return:
-{
-  "total_emissions": <sum>,
-  "unit": "kg CO2e monthly",
-  "breakdown": [{"source": "<type>", "emissions": <value>}, ...]
-}
-If a source’s factor isn’t listed, note it in "unhandled_sources". Do NOT add backticks like ` to indicate that it is JSON text, only the content is necessary.
+        return dedent("""\
+            You are provided with structured data about a company's emission sources in the context.
+            Your task is to calculate the total carbon emissions.
+
+            Follow these steps:
+            1. Review each emission source provided in the context.
+            2. For each source, determine the substance (e.g., 'diesel', 'natural gas', 'coal', 'electricity', 'refrigerant R-410a').
+            3. **Assess Information Need:** Do you have a reliable emission factor (kg CO2e per unit) for this specific substance readily available or from common knowledge? Is the calculation method clear?
+            4. **Conditional Tool Use:** If, AND ONLY IF, you lack a specific factor or methodology necessary for the calculation:
+                a. Formulate a *targeted question* (e.g., "What is the CO2e emission factor per kg for refrigerant R-410a?", "Standard method for calculating emissions from industrial waste incineration?").
+                b. Use the 'Core Knowledge Lookup' tool with your specific question. Use it *sparingly* - only when essential information is missing.
+                c. **Evaluate Relevance:** Examine the tool's response. Does it directly answer your question and provide the necessary factor/method?
+                d. **Integrate or Discard:** If relevant and useful, use the information in your calculation. If the response is irrelevant, unhelpful, or nothing is found, *ignore it* and proceed. Note the source as potentially unhandled or use a documented standard assumption if appropriate. Do NOT include irrelevant retrieved text in your final output.
+            5. If you have the factor (either from knowledge or the tool):
+               - Calculate the monthly emissions for that source using the provided quantities and the factor.
+               - Ensure units match (convert daily to monthly * 30, tons to kg * 1000, etc.).
+               - Add to the breakdown: {"source": "<source type>", "emissions": <calculated value>}.
+            6. If a factor/method couldn't be reliably determined (even after checking the tool):
+               - Add the source type to an 'unhandled_sources' list in the final JSON.
+            7. Sum the emissions from all successfully calculated sources.
+            8. Format the final output as a JSON object:
+            {
+              "total_emissions": <sum>,
+              "unit": "kg CO2e monthly",
+              "breakdown": [{"source": "<type>", "emissions": <value>}, ...],
+              "unhandled_sources": ["<type1>", ...] // Only if applicable
+            }
+            Prioritize accuracy and transparency. Only use information you trust, whether from context, common knowledge, or *relevant* tool lookups. Avoid speculation. Ensure valid JSON output without backticks.
         """)
+
 
     def suggest_initiatives_description(self):
         return dedent("""

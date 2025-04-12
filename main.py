@@ -5,12 +5,10 @@ from typing import List, Dict
 from textwrap import dedent
 from initiatives.process import process_summary
 import json
-import chromadb
 from langchain.chains import create_history_aware_retriever, create_retrieval_chain
 from langchain.chains.combine_documents import create_stuff_documents_chain
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from langchain_groq import ChatGroq
-from langchain.embeddings import HuggingFaceEmbeddings
 from langchain.vectorstores import Chroma
 from langchain_core.messages import HumanMessage, AIMessage
 from langchain.text_splitter import RecursiveCharacterTextSplitter 
@@ -18,16 +16,16 @@ from langchain_core.documents import Document
 from langchain_community.document_loaders import PyPDFLoader 
 import tempfile
 import os
+from rag import get_retriever, get_chroma_client, get_embeddings
 #pip install pypdf
 
 load_dotenv()
 
 app = FastAPI()
-client = chromadb.PersistentClient(path="./chroma_db")
-embeddings = HuggingFaceEmbeddings(model_name="all-mpnet-base-v2")
 
-core_db = Chroma(client=client, collection_name="core_db", embedding_function=embeddings)
-core_retriever = core_db.as_retriever(search_type="similarity", search_kwargs={"k": 3})
+client = get_chroma_client()
+embeddings = get_embeddings()
+core_retriever = get_retriever("core_db")
 
 llm = ChatGroq(model="llama-3.3-70b-versatile")
 
@@ -186,23 +184,11 @@ async def update_vector(user_id: str = Form(...), file: UploadFile = None, is_co
     except Exception as e:
         print(f"error {str(e)}")
         return {"status_code": 500, "response_content": f"Upload error: {str(e)}"}
-        
-# RAG endpoint with LangChain retriever
-@app.get("/rag")
-def get_rag_context(summary: str, user_id: str):
-    try:
-        user_db = Chroma(client=client, collection_name=f"user_{user_id}", embedding_function=embeddings)
-        user_retriever = user_db.as_retriever(search_type="similarity", search_kwargs={"k": 3})
-        docs = user_retriever.get_relevant_documents(summary)
-        response_content = "\n".join([doc.page_content for doc in docs]) if docs else ""
-        return {"status_code": 200, "response_content": response_content}
-    except Exception as e:
-        return {"status_code": 500, "response_content": f"Error: {str(e)}"}
 
 @app.get("/list_files")
 def list_files(collection_name: str):
     try:
-        db = Chroma(client=client, collection_name=collection_name, embedding_function=embeddings)
+        db = Chroma(client=client, collection_name=collection_name)
         results = db.get()
         print(f"Collection {collection_name} has {len(results['documents'])} chunks")
         filenames = set(meta["filename"] for meta in results["metadatas"] if "filename" in meta)
