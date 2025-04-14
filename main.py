@@ -1,4 +1,4 @@
-from fastapi import FastAPI, Form, UploadFile
+from fastapi import FastAPI, Form, UploadFile, HTTPException, Depends, Header, status
 from dotenv import load_dotenv
 from pydantic import BaseModel
 from typing import List, Dict
@@ -17,11 +17,21 @@ from langchain_community.document_loaders import PyPDFLoader
 import tempfile
 import os
 from rag import get_retriever, get_chroma_client, get_embeddings
-#pip install pypdf
+#pip install pypdf, supabase
+from supabase import create_client, Client
 
 load_dotenv()
 
+SUPABASE_URL = os.getenv("SUPABASE_URL")
+SUPABASE_ANON_KEY = os.getenv("SUPABASE_ANON_KEY")
+SUPABASE_SERVICE_KEY = os.getenv("SUPABASE_SERVICE_KEY")
+supabase_service: Client = create_client(SUPABASE_URL, SUPABASE_SERVICE_KEY)
+# Optional: Anon client if backend needs public API calls
+supabase_anon: Client = create_client(SUPABASE_URL, SUPABASE_ANON_KEY)
+
 app = FastAPI()
+
+ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD")
 
 client = get_chroma_client()
 embeddings = get_embeddings()
@@ -82,29 +92,89 @@ rag_chain = create_retrieval_chain(history_aware_retriever, question_answer_chai
 class ChatRequest(BaseModel):
     query: str
     history: List[Dict[str, str]]
-    user_id: str
+
+async def get_current_user(authorization: str = Header(...)) -> dict:
+    if not authorization or not authorization.startswith("Bearer "):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED, # Use status codes
+            detail="Invalid or missing Authorization header (must be 'Bearer token')",
+        )
+    token = authorization.split(" ")[1] # Extract token after "Bearer "
+    try:
+        # get_user() with the service key implicitly verifies the token.
+        response = supabase_service.auth.get_user(token)
+        if not response or not response.user:
+             raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token or user not found")
+        return response.user # Return the user object directly
+    except Exception as e:
+        # Log the actual error for debugging
+        print(f"Token validation error: {e}")
+        # Provide a generic error to the client
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid token or authentication error"
+        )
+    
+@app.post("/signup")
+async def signup(email: str = Form(...), password: str = Form(...)):
+    try:
+        response = supabase_anon.auth.sign_up({"email": email, "password": password})
+        return {"status_code": 200, "user_id": response.user.id}
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+@app.post("/login")
+async def login(email: str = Form(...), password: str = Form(...)):
+    try:
+        response = supabase_anon.auth.sign_in_with_password({"email": email, "password": password})
+        return {
+            "status_code": 200,
+            "access_token": response.session.access_token,
+            "user_id": str(response.user.id)
+        }
+    except Exception as e:
+        raise HTTPException(status_code=401, detail=str(e))
 
 @app.post("/chat")
-def chat(request: ChatRequest):
+async def chat(request: ChatRequest, user: dict = Depends(get_current_user)): # user is the User object
     query = request.query
     history = request.history
-    user_id = request.user_id
+    user_id = str(user.id)
     try:
+        try:
+            supabase_service.table("chat_messages").insert({
+                "user_id": user_id,
+                "role": "user",
+                "content": query
+            }).execute()
+        except Exception as db_error:
+            print(f"Error saving user message to DB: {db_error}")
+            
         # Convert history to LangChain message format
         chat_history = []
         for msg in history:
-            if msg["role"] == "user":
-                chat_history.append(HumanMessage(content=msg["content"]))
-            elif msg["role"] == "assistant":
-                chat_history.append(AIMessage(content=msg["content"]))
+            role = msg.get("role")
+            content = msg.get("content")
+            if role and content: # Basic validation
+                if role == "user":
+                    chat_history.append(HumanMessage(content=content))
+                elif role == "assistant":
+                    chat_history.append(AIMessage(content=content))
+            else:
+                print(f"Skipping invalid history message: {msg}")
+
 
         # Invoke RAG chain
-        result = rag_chain.invoke({"input": query, "chat_history": chat_history})
-        answer = result["answer"]
+        try:
+            result = rag_chain.invoke({"input": query, "chat_history": chat_history})
+            answer = result.get("answer", "Sorry, I couldn't generate a response.") # Provide default
+        except Exception as rag_error:
+             print(f"Error invoking RAG chain: {rag_error}")
+             answer = "Sorry, an error occurred while processing your request."
 
         if "FINAL DESCRIPTION:" in answer:
             summary = answer.split("FINAL DESCRIPTION:")[1].strip()
-            result = process_summary(summary, user_id)
+            result = process_summary(summary, user.id)
             try:
                 parsed = json.loads(result[0])
                 emissions = json.loads(result[1])
@@ -124,9 +194,23 @@ def chat(request: ChatRequest):
                 "\n".join([f"- **{s['initiative']}**\n  *{s['description']}*\n  **Impact:** {s['impact']}\n  **Track with:** {', '.join(s['metrics'])}"
                            for s in suggestions])
             )
+
+        try:
+            supabase_service.table("chat_messages").insert({
+                "user_id": user_id,
+                "role": "assistant",
+                "content": answer
+            }).execute()
+        except Exception as db_error:
+            print(f"Error saving assistant message to DB: {db_error}")
+
         return {"status_code": 200, "response_content": answer}
+    except HTTPException as he: # Re-raise HTTP exceptions from Depends
+        raise he
     except Exception as e:
-        return {"status_code": 500, "response_content": f"Error: {str(e)}"}
+        print(f"Error in /chat endpoint: {e}") 
+        raise HTTPException(status_code=500, detail="Internal server error")
+
 
 @app.post("/update_vector")
 async def update_vector(user_id: str = Form(...), file: UploadFile = None, is_core: str = Form("false")):
@@ -196,3 +280,31 @@ def list_files(collection_name: str):
         return {"status_code": 200, "response_content": list(filenames)}
     except Exception as e:
         return {"status_code": 500, "response_content": f"Error: {str(e)}"}
+    
+@app.post("/authenticate")
+async def authenticate(password: str = Form(...)):
+    if password == ADMIN_PASSWORD:
+        return {"status_code": 200, "admin": True}
+    else:
+        raise HTTPException(status_code=401, detail="Incorrect password")
+    
+@app.get("/history")
+async def get_history(user: dict = Depends(get_current_user)): # user is now the User object from Supabase
+    try:
+        messages = supabase_service.table("chat_messages").select("role, content").eq("user_id", str(user.id)).order("created_at").execute()
+
+        # Check for PostgREST errors explicitly if possible 
+        if hasattr(messages, 'error') and messages.error:
+             print(f"Supabase error fetching history: {messages.error}")
+             raise HTTPException(status_code=500, detail="Database error fetching history")
+
+        return {
+            "status_code": 200,
+            "response_content": messages.data # Directly return the list of dicts
+        }
+    except HTTPException as he: # Re-raise HTTP exceptions
+        raise he
+    except Exception as e:
+        print(f"Error fetching history: {e}") # Log the error
+        # Avoid returning the raw exception string to the client
+        return {"status_code": 500, "response_content": "Internal server error fetching history"}
