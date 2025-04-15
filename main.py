@@ -18,7 +18,7 @@ import tempfile
 import os
 from rag import get_retriever, get_chroma_client, get_embeddings
 #pip install pypdf, supabase
-from supabase import create_client, Client
+from supabase import create_client, Client, AuthApiError
 
 load_dotenv()
 
@@ -115,11 +115,66 @@ async def get_current_user(authorization: str = Header(...)) -> dict:
             detail="Invalid token or authentication error"
         )
     
+async def is_admin(user_id: str) -> bool:
+    """Checks if the given user_id has the 'admin' role."""
+    try:
+        # Use the service client which bypasses RLS for this check
+        response = supabase_service.table("user_roles") \
+            .select("role") \
+            .eq("user_id", user_id) \
+            .single() \
+            .execute() # Use single() because user_id is unique
+
+        # Debugging: print(f"Role check for {user_id}: {response}")
+
+        # Check if data exists and role is 'admin'
+        if response.data and response.data.get("role") == "admin":
+            return True
+        return False
+    except Exception as e:
+        # Log error fetching role
+        print(f"Error checking admin role for user {user_id}: {e}")
+        # Default to False if error occurs or user/role not found
+        return False
+
+    
 @app.post("/signup")
 async def signup(email: str = Form(...), password: str = Form(...)):
     try:
         response = supabase_anon.auth.sign_up({"email": email, "password": password})
-        return {"status_code": 200, "user_id": response.user.id}
+        new_user_id = response.user.id
+
+        try:
+            # Use the SERVICE client to insert the role
+            insert_response = supabase_service.table("user_roles").insert({
+                "user_id": new_user_id,
+                "role": "user"  # Assign the default role
+            }).execute()
+
+            # Optional: Check for errors during role insertion
+            if hasattr(insert_response, 'error') and insert_response.error:
+                print(f"Error inserting default role for {new_user_id}: {insert_response.error}")
+                # Decide how to handle this: Log it? Raise an error?
+                # For now, we might let signup succeed but log the role issue.
+
+        except Exception as role_insert_error:
+            print(f"Failed to insert default role for user {new_user_id}: {role_insert_error}")
+            # Log the error, but potentially allow signup to appear successful
+
+        return {"status_code": 200, "user_id": response.user.id, "message": "Signup successful. Please check your email for confirmation."}
+
+    except AuthApiError as e:
+        # Check if the error message indicates a duplicate user
+        # Common messages include "User already registered", "duplicate key value violates unique constraint"
+        # Inspect the actual error message 'e.message' or 'str(e)' during testing if unsure
+        if "User already registered" in e.message or "already exists" in e.message:
+             raise HTTPException(
+                 status_code=409, # Conflict status code
+                 detail="Email already registered. Please try logging in."
+             )
+        else:
+            # Handle other authentication errors
+            raise HTTPException(status_code=400, detail=f"{e.message}")
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
 
@@ -130,8 +185,12 @@ async def login(email: str = Form(...), password: str = Form(...)):
         return {
             "status_code": 200,
             "access_token": response.session.access_token,
-            "user_id": str(response.user.id)
+            "user_id": str(response.user.id),
+            "user_email": response.user.email
         }
+    except AuthApiError as e:
+         # Common message for invalid login: "Invalid login credentials"
+        raise HTTPException(status_code=401, detail=f"Login failed: {e.message}")
     except Exception as e:
         raise HTTPException(status_code=401, detail=str(e))
 
@@ -213,17 +272,28 @@ async def chat(request: ChatRequest, user: dict = Depends(get_current_user)): # 
 
 
 @app.post("/update_vector")
-async def update_vector(user_id: str = Form(...), file: UploadFile = None, is_core: str = Form("false")):
+async def update_vector(file: UploadFile = None, is_core: str = Form("false"), user: dict = Depends(get_current_user)):
+    user_id = str(user.id)
+
+    if is_core.lower() == "true":
+            admin_status = await is_admin(user_id)
+            if not admin_status:
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="Uploading to the core knowledge base requires admin privileges."
+                )
+
+    if not file:
+        raise HTTPException(status_code=400, detail="No file provided")
+    
     try:
-        if not file:
-            return {"status_code": 400, "response_content": "No file provided"}
         if file.size > 10 * 1024 * 1024:
-            return {"status_code": 400, "response_content": "File too large (>10MB)"}
+            raise HTTPException(status_code=413, detail="File too large (>10MB)")
 
         file_content = await file.read()
         filename = file.filename
         collection_name = "core_db" if is_core.lower() == "true" else f"user_{user_id}"
-        print(f"Storing in collection: {collection_name}")
+        print(f"Authenticated user {user_id} storing in collection: {collection_name}")
 
         if filename.lower().endswith(".pdf"):
             with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp:
@@ -263,11 +333,11 @@ async def update_vector(user_id: str = Form(...), file: UploadFile = None, is_co
         return {"status_code": 200, "response_content": f"Added {filename} ({len(chunked_docs)} chunks) to {'core ' if is_core.lower() == 'true' else ''}datastore"}
     except UnicodeDecodeError:
         print("error 1")
-        return {"status_code": 400, "response_content": "File must be a valid UTF-8 text file"}
+        raise HTTPException(status_code=400, detail="File must be a valid UTF-8 text file")
         
     except Exception as e:
         print(f"error {str(e)}")
-        return {"status_code": 500, "response_content": f"Upload error: {str(e)}"}
+        raise HTTPException(status_code=500, detail=f"File upload error: {str(e)}")
 
 @app.get("/list_files")
 def list_files(collection_name: str):
@@ -280,13 +350,6 @@ def list_files(collection_name: str):
         return {"status_code": 200, "response_content": list(filenames)}
     except Exception as e:
         return {"status_code": 500, "response_content": f"Error: {str(e)}"}
-    
-@app.post("/authenticate")
-async def authenticate(password: str = Form(...)):
-    if password == ADMIN_PASSWORD:
-        return {"status_code": 200, "admin": True}
-    else:
-        raise HTTPException(status_code=401, detail="Incorrect password")
     
 @app.get("/history")
 async def get_history(user: dict = Depends(get_current_user)): # user is now the User object from Supabase
@@ -308,3 +371,12 @@ async def get_history(user: dict = Depends(get_current_user)): # user is now the
         print(f"Error fetching history: {e}") # Log the error
         # Avoid returning the raw exception string to the client
         return {"status_code": 500, "response_content": "Internal server error fetching history"}
+    
+@app.get("/my_role")
+async def get_my_role(user: dict = Depends(get_current_user)):
+    """Fetches the role for the currently authenticated user."""
+    user_id = str(user.id)
+    is_user_admin = await is_admin(user_id) # Reuse the helper function
+    role = "admin" if is_user_admin else "user" # Determine role (can be more complex if >2 roles)
+    return {"status_code": 200, "role": role}
+

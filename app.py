@@ -9,8 +9,7 @@ def response_generator(prompt, history):
             return
         payload = {
             "query": prompt,
-            "history": history,
-            "user_id": st.session_state.user_id,
+            "history": history
         }
         placeholder = st.empty()
         with placeholder:
@@ -41,24 +40,8 @@ if "messages" not in st.session_state:
     st.session_state.messages = [
         {"role": "assistant", "content": "Hi! I'm excited to figure out your company operations in detail! What information do you have for me?"}
     ]
-if "admin" not in st.session_state:
-    st.session_state.admin = False
-
-
-def check_admin_password():
-    password = st.session_state.get("password_input")
-    if password:
-        try:
-            response = requests.post("http://127.0.0.1:8000/authenticate", data={"password": password})
-            if response.status_code == 200 and response.json().get("admin"):
-                st.session_state.admin = True
-                st.sidebar.success("Logged in as admin!")
-            else:
-                st.session_state.admin = False
-                st.sidebar.error("Incorrect password")
-        except requests.RequestException:
-            st.sidebar.error("Error connecting to authentication service")
-
+if 'user_role' not in st.session_state:
+    st.session_state.user_role = None
 
 if "access_token" not in st.session_state:
     with st.form("login_form"):
@@ -72,15 +55,32 @@ if "access_token" not in st.session_state:
                 if response.status_code == 200:
                     st.session_state.access_token = response.json()["access_token"]
                     st.session_state.user_id = response.json()["user_id"]
-                    # Fetch history
+                    st.session_state.user_email = response.json()["user_email"]
                     headers = {"Authorization": f"Bearer {st.session_state.access_token}"}
+
+                    # --- Fetch User Role ---
+                    headers = {"Authorization": f"Bearer {st.session_state.access_token}"}
+                    try:
+                         role_response = requests.get("http://127.0.0.1:8000/my_role", headers=headers)
+                         if role_response.status_code == 200:
+                             st.session_state.user_role = role_response.json().get("role", "user") # Default to 'user'
+                         else:
+                             st.error("Could not determine user role.")
+                             st.session_state.user_role = "user" # Fallback
+                    except Exception as role_err:
+                         st.error(f"Error fetching user role: {role_err}")
+                         st.session_state.user_role = "user" # Fallback
+
+                    # --- Fetch history ---
                     history_response = requests.get("http://127.0.0.1:8000/history", headers=headers)
                     if history_response.status_code == 200:
                         st.session_state.messages = history_response.json()["response_content"]
+                        if not st.session_state.messages: # Handle empty history
+                                    st.session_state.messages = [{"role": "assistant", "content": "Welcome! How can I help?"}]
                     else:
-                        st.session_state.messages = [
-                            {"role": "assistant", "content": "Hi! I'm excited to figure out your company operations in detail! What information do you have for me?"}
-                        ]
+                        st.error("Could not load chat history.")
+                        st.session_state.messages = [{"role": "assistant", "content": "Hi! Could not load history."}]
+
                     st.rerun()
                 else:
                     st.error("Login failed: Invalid email or password")
@@ -90,21 +90,28 @@ if "access_token" not in st.session_state:
             try:
                 response = requests.post("http://127.0.0.1:8000/signup", data={"email": email, "password": password})
                 if response.status_code == 200:
-                    st.success("Signed up! Please log in.")
+                    st.success("Signed up successfully! Please log in.")
+                elif response.status_code == 409: # Check for Conflict
+                    st.warning(response.json().get("detail", "Email already registered."))
                 else:
-                    st.error("Signup failed: Email may already exist")
+                # Handle other errors reported by the backend
+                    st.error(f"Signup failed: {response.json().get('detail', 'Unknown error')}")
             except requests.RequestException as e:
                 st.error(f"Signup error: {str(e)}")
 else:
-    if not st.session_state.admin:
+    access_token = st.session_state.access_token
+    headers = {"Authorization": f"Bearer {access_token}"}
+    is_user_admin = st.session_state.get('user_role') == 'admin'
+
+    if not is_user_admin:
         st.sidebar.header("Upload Files")
         uploaded_files = st.sidebar.file_uploader(
             "Add files to your knowledge base",
             type=["txt", "pdf"],
             accept_multiple_files=True
         )
-        st.sidebar.text_input("Enter Admin Password", type="password",
-                              key="password_input", on_change=check_admin_password)
+
+        is_core_flag = "false"
     else:
         st.sidebar.header(":red[ADMIN PRIVILEGES]")
         try:
@@ -123,24 +130,29 @@ else:
         uploaded_files = st.sidebar.file_uploader(
             "Add files to the CORE knowledge base",
             type=["txt", "pdf"],
-            accept_multiple_files=True
+            accept_multiple_files=True,
+            key="admin_uploader"
         )
 
+        is_core_flag = "true"
+
     if uploaded_files:
-        for file in uploaded_files:
-            if file.name not in st.session_state.uploaded_files:
-                content_type = "application/pdf" if file.name.lower().endswith(".pdf") else "text/plain"
-                files = {"file": (file.name, file.getvalue(), content_type)}
-                data = {
-                    "user_id": st.session_state.user_id,
-                    "is_core": "true" if st.session_state.admin else "false"
-                }
-                response = requests.post("http://127.0.0.1:8000/update_vector", files=files, data=data)
-                if response.status_code == 200:
-                    st.session_state.uploaded_files.append(file.name)
-                    st.session_state.messages.append({"role": "system", "content": f"{file.name} was added to the knowledge base."})
-                else:
-                    st.sidebar.write(f"Error saving {file.name}: {response.json().get('response_content', 'Unknown error')}")
+        if not access_token:
+            st.sidebar.error("Authentication error. Please log in again.")
+        else:
+            for file in uploaded_files:
+                if file.file_id not in st.session_state.uploaded_files:
+                    content_type = "application/pdf" if file.name.lower().endswith(".pdf") else "text/plain"
+                    files = {"file": (file.name, file.getvalue(), content_type)}
+                    data = {
+                        "is_core": is_core_flag
+                    }
+                    response = requests.post("http://127.0.0.1:8000/update_vector", files=files, data=data, headers=headers)
+                    if response.status_code == 200:
+                        st.session_state.uploaded_files.append(file.file_id)
+                        st.session_state.messages.append({"role": "system", "content": f"{file.name} was added to the knowledge base."})
+                    else:
+                        st.sidebar.write(f"Error saving {file.name}: {response.json().get('response_content', 'Unknown error')}")
 
     with st.container():
         for message in st.session_state.messages:
@@ -157,3 +169,18 @@ else:
                 streamed_response = st.write_stream(response_generator(query, st.session_state.messages))
                 full_response = "".join(streamed_response)
                 st.session_state.messages.append({"role": "assistant", "content": full_response})
+
+    st.sidebar.write(f"Logged in as: {st.session_state.get('user_email', 'Unknown User')}") # Optional: display email
+
+    if st.sidebar.button("Logout"):
+        # Clear authentication state
+        st.session_state.pop('access_token', None)
+        st.session_state.pop('user_id', None)
+        st.session_state.pop('user_email', None) # Clear email if stored
+        # Clear chat history from session state to force reload on next login
+        st.session_state.pop('messages', None)
+        # Clear admin status if you track it
+        st.session_state.pop('admin', None)
+        st.success("Logged out successfully.")
+        time.sleep(1) # Brief pause to show message
+        st.rerun() # Rerun the app to show the login form
