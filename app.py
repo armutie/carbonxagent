@@ -119,18 +119,19 @@ else:
         is_core_flag = "false"
     else:
         st.sidebar.header(":red[ADMIN PRIVILEGES]")
-        try:
-            response = requests.get(f"{BACKEND_URL}/list_files", params={"collection_name": "core_db"})
-            response.raise_for_status()
-            core_files = response.json().get("response_content", [])
-            if core_files:
-                st.sidebar.subheader("Current Files in Core Knowledge Base")
-                for file in core_files:
-                    st.sidebar.write(f"- {file}")
-            else:
-                st.sidebar.write("No files in core knowledge base yet.")
-        except requests.RequestException as e:
-            st.sidebar.error(f"Error fetching files: {str(e)}")
+        # Removing listing feature for now because it's fairly complicated through Pinecone
+        # try:
+        #     response = requests.get(f"{BACKEND_URL}/list_files", params={"collection_name": "core_db"}, headers=headers)
+        #     response.raise_for_status()
+        #     core_files = response.json().get("response_content", [])
+        #     if core_files:
+        #         st.sidebar.subheader("Current Files in Core Knowledge Base")
+        #         for file in core_files:
+        #             st.sidebar.write(f"- {file}")
+        #     else:
+        #         st.sidebar.write("No files in core knowledge base yet.")
+        # except requests.RequestException as e:
+        #     st.sidebar.error(f"Error fetching files: {str(e)}")
 
         uploaded_files = st.sidebar.file_uploader(
             "Add files to the CORE knowledge base",
@@ -178,14 +179,11 @@ else:
     st.sidebar.write(f"Logged in as: {st.session_state.get('user_email', 'Unknown User')}") # Optional: display email
 
     if st.sidebar.button("Logout"):
-        # Clear authentication state
         st.session_state.pop('access_token', None)
         st.session_state.pop('user_id', None)
         st.session_state.pop('user_email', None) # Clear email if stored
-        # Clear chat history from session state to force reload on next login
         st.session_state.pop('messages', None)
-        # Clear admin status if you track it
         st.session_state.pop('admin', None)
         st.success("Logged out successfully.")
         time.sleep(1) # Brief pause to show message
-        st.rerun() # Rerun the app to show the login form
+        st.rerun() 

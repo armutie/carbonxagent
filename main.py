@@ -9,14 +9,13 @@ from langchain.chains import create_history_aware_retriever, create_retrieval_ch
 from langchain.chains.combine_documents import create_stuff_documents_chain
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from langchain_groq import ChatGroq
-from langchain.vectorstores import Chroma
 from langchain_core.messages import HumanMessage, AIMessage
 from langchain.text_splitter import RecursiveCharacterTextSplitter 
 from langchain_core.documents import Document
 from langchain_community.document_loaders import PyPDFLoader 
 import tempfile
 import os
-from rag import get_retriever, get_chroma_client, get_embeddings
+from rag import get_retriever, get_vector_store, get_embeddings, RAGConfig
 #pip install pypdf, supabase
 from supabase import create_client, Client, AuthApiError
 
@@ -33,7 +32,6 @@ app = FastAPI()
 
 ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD")
 
-client = get_chroma_client()
 embeddings = get_embeddings()
 core_retriever = get_retriever("core_db")
 
@@ -335,82 +333,138 @@ async def chat(request: ChatRequest, user: dict = Depends(get_current_user)): # 
 @app.post("/update_vector")
 async def update_vector(file: UploadFile = None, is_core: str = Form("false"), user: dict = Depends(get_current_user)):
     user_id = str(user.id)
-
+    # --- Admin Check ---
     if is_core.lower() == "true":
             admin_status = await is_admin(user_id)
             if not admin_status:
-                raise HTTPException(
-                    status_code=status.HTTP_403_FORBIDDEN,
-                    detail="Uploading to the core knowledge base requires admin privileges."
-                )
+                raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Need to be admin")
 
+    # --- File Validation ---
     if not file:
         raise HTTPException(status_code=400, detail="No file provided")
-    
-    try:
-        if file.size > 10 * 1024 * 1024:
-            raise HTTPException(status_code=413, detail="File too large (>10MB)")
+    if file.size > 10 * 1024 * 1024: # Example: 10MB limit
+        raise HTTPException(status_code=413, detail="File too large (>10MB)")
 
+    try:
         file_content = await file.read()
         filename = file.filename
-        collection_name = "core_db" if is_core.lower() == "true" else f"user_{user_id}"
-        print(f"Authenticated user {user_id} storing in collection: {collection_name}")
+        # --- Determine NAMESPACE for Pinecone ---
+        namespace = "core_db" if is_core.lower() == "true" else f"user_{user_id}"
+        print(f"Authenticated user {user_id} preparing to store in Pinecone namespace: {namespace}")
 
+        docs = []
+        # --- Load File Content ---
         if filename.lower().endswith(".pdf"):
             with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp:
                 tmp.write(file_content)
                 tmp_path = tmp.name
             try:
                 loader = PyPDFLoader(tmp_path)
-                docs = loader.load()  # Returns a list of Document objects, one per page
-                for doc in docs:
-                    doc.metadata.update({"filename": filename, "user_id": user_id})
-                print(f"Loaded {len(docs)} pages from {filename}")
+                loaded_docs = loader.load()
+                docs.extend(loaded_docs) # Use extend to add all pages
+                print(f"Loaded {len(loaded_docs)} pages from PDF: {filename}")
             finally:
-                os.unlink(tmp_path)  
+                os.unlink(tmp_path)
+        elif filename.lower().endswith(".txt"):
+             try:
+                file_text = file_content.decode("utf-8")
+                doc = Document(page_content=file_text) 
+                docs.append(doc)
+                print(f"Loaded text file {filename} with {len(file_text)} characters")
+             except UnicodeDecodeError:
+                print("Unicode decode error for TXT file")
+                raise HTTPException(status_code=400, detail="File must be a valid UTF-8 text file")
         else:
-            # Decode file content and create a LangChain Document
-            file_text = file_content.decode("utf-8")
-            docs = [Document(page_content=file_text, metadata={"filename": filename, "user_id": user_id})]
-            for doc in docs:
-                    doc.metadata.update({"filename": filename, "user_id": user_id})
-            print(f"Loaded text file {filename} with {len(file_text)} characters")
+             raise HTTPException(status_code=415, detail="Unsupported file type. Please upload PDF or TXT.")
 
-        text_splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=0)
+        # --- Add Metadata (CRITICAL FOR PINEONE) ---
+        for doc in docs:
+             doc.metadata = {
+                 "filename": filename,
+                 "user_id": user_id,
+                 "original_collection": namespace # Store the intended collection as metadata too
+                 # Add other metadata as needed (e.g., page for PDF: 'page': doc.metadata.get('page', 0) )
+             }
+             # Add page number if it exists from PDF loader
+             if 'page' in getattr(doc, 'metadata', {}):
+                 doc.metadata['page'] = doc.metadata.get('page')
+
+
+        if not docs:
+            raise HTTPException(status_code=400, detail="Could not extract document content.")
+
+        # --- Split Documents ---
+        text_splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=100)
         chunked_docs = text_splitter.split_documents(docs)
         print(f"Split into {len(chunked_docs)} chunks")
-        for i, doc in enumerate(chunked_docs):
-            print(f"Chunk {i+1}: {len(doc.page_content)} characters")
-        db = Chroma(client=client, collection_name=collection_name, embedding_function=embeddings)
-        batch_size = 50 
-        for i in range(0, len(chunked_docs), batch_size):
-            batch = chunked_docs[i:i + batch_size]
-            print(f"Adding batch {i // batch_size + 1} ({len(batch)} chunks)...")
-            db.add_documents(batch)
-            print(f"Batch {i // batch_size + 1} added")
 
-        print(f"Finished adding all {len(chunked_docs)} chunks")
+        try:
+            pinecone_index_name = os.getenv("PINECONE_INDEX_NAME")
+            if not pinecone_index_name:
+                raise ValueError("PINECONE_INDEX_NAME env var is missing!")
+            print(f"[UpdateVector] Target Pinecone Index: '{pinecone_index_name}'")
+            print(f"[UpdateVector] Target Namespace: '{namespace}'")
 
-        return {"status_code": 200, "response_content": f"Added {filename} ({len(chunked_docs)} chunks) to {'core ' if is_core.lower() == 'true' else ''}datastore"}
+            # *** Get store for the specific namespace ***
+            print(f"[UpdateVector] Getting vector store for namespace '{namespace}'...")
+            vector_store = get_vector_store(namespace=namespace)
+            print(f"[UpdateVector] Vector store object obtained: {type(vector_store)}")
+
+            # *** Define Batch Size ***
+            # Adjust this based on typical chunk size and metadata size.
+            # Start smaller (e.g., 50-100) and increase if uploads are too slow but below 2MB.
+            batch_size = 100
+            print(f"[UpdateVector] Using batch size: {batch_size}")
+
+            total_batches = (len(chunked_docs) + batch_size - 1) // batch_size
+            print(f"[UpdateVector] Adding {len(chunked_docs)} chunks in {total_batches} batches...")
+
+            for i in range(0, len(chunked_docs), batch_size):
+                batch_num = (i // batch_size) + 1
+                batch_docs = chunked_docs[i:i + batch_size]
+                print(f"[UpdateVector] Processing Batch {batch_num}/{total_batches} ({len(batch_docs)} chunks)...")
+
+                # *** Add the current BATCH ***
+                try:
+                    vector_store.add_documents(batch_docs)
+                    print(f"[UpdateVector] Batch {batch_num} added successfully.")
+                except Exception as batch_error:
+                    print(f"---! ERROR adding Batch {batch_num} !---")
+                    print(f"Error Type: {type(batch_error).__name__}")
+                    print(f"Error Details: {batch_error}")
+                    raise Exception(f"Failed on batch {batch_num}") from batch_error
+
+                # Optional: Add a small delay between batches if needed (e.g., for rate limits, though less common for upsert size)
+                # time.sleep(0.5)
+
+            print(f"[UpdateVector] All batches processed.")
+
+        except Exception as pinecone_process_error:
+            # Catch errors from getting store or during batch loop
+            print(f"---! ERROR during Pinecone processing !---")
+            print(f"Error Type: {type(pinecone_process_error).__name__}")
+            print(f"Error Details: {pinecone_process_error}")
+            import traceback
+            print(traceback.format_exc())
+            raise HTTPException(status_code=500, detail=f"Failed during Pinecone processing: {pinecone_process_error}")
+
+
+        print(f"Finished adding all {len(chunked_docs)} chunks for {filename} to namespace '{namespace}'")
+        return {"status_code": 200, "response_content": f"Added {filename} ({len(chunked_docs)} chunks) to namespace '{namespace}'"}
+
+    # --- Error Handling ---
+    except HTTPException as he:
+         raise he 
     except UnicodeDecodeError:
-        print("error 1")
+        print(f"Error decoding file {filename}")
         raise HTTPException(status_code=400, detail="File must be a valid UTF-8 text file")
-        
     except Exception as e:
-        print(f"error {str(e)}")
-        raise HTTPException(status_code=500, detail=f"File upload error: {str(e)}")
+        # Catch potential Pinecone client errors too
+        print(f"Unexpected error processing file {filename}: {str(e)}")
+        import traceback
+        print(traceback.format_exc()) # Good for debugging Pinecone errors
+        raise HTTPException(status_code=500, detail=f"File upload processing error: {str(e)}")
 
-@app.get("/list_files")
-def list_files(collection_name: str):
-    try:
-        db = Chroma(client=client, collection_name=collection_name)
-        results = db.get()
-        print(f"Collection {collection_name} has {len(results['documents'])} chunks")
-        filenames = set(meta["filename"] for meta in results["metadatas"] if "filename" in meta)
-        print(f"Found filenames: {filenames}")
-        return {"status_code": 200, "response_content": list(filenames)}
-    except Exception as e:
-        return {"status_code": 500, "response_content": f"Error: {str(e)}"}
     
 @app.get("/history")
 async def get_history(user: dict = Depends(get_current_user)): # user is now the User object from Supabase
@@ -441,3 +495,28 @@ async def get_my_role(user: dict = Depends(get_current_user)):
     role = "admin" if is_user_admin else "user" # Determine role (can be more complex if >2 roles)
     return {"status_code": 200, "role": role}
 
+# @app.get("/list_files")
+# async def list_files(collection_name: str, user: dict = Depends(get_current_user)):
+#     # Implement security check - only admin can list 'core_db'
+#     is_user_admin = await is_admin(str(user.id))
+#     if collection_name == "core_db" and not is_user_admin:
+#          raise HTTPException(status_code=403, detail="Admin required to list core files")
+#     # Optional: Allow users to list their own files
+#     # elif collection_name != f"user_{user.id}" and not is_user_admin:
+#     #     raise HTTPException(status_code=403, detail="Cannot list files for other users")
+
+#     try:
+#         response = supabase_service.table(RAGConfig.SUPABASE_TABLE_NAME)\
+#             .select("metadata->filename")\
+#             .eq("metadata->>collection_name", collection_name)\
+#             .execute()
+
+#         if response.data:
+#             # Extract unique filenames
+#             filenames = set(item['filename'] for item in response.data if item.get('filename'))
+#             return {"status_code": 200, "response_content": list(filenames)}
+#         else:
+#             return {"status_code": 200, "response_content": []} # No files found
+#     except Exception as e:
+#          print(f"Error listing files from Supabase: {e}")
+#          raise HTTPException(status_code=500, detail=f"Error listing files: {str(e)}")

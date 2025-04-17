@@ -1,0 +1,63 @@
+# --- Frontend ---
+streamlit==1.44.1
+# requests is used by streamlit app to call backend, also a common dep
+requests==2.32.3
+
+# --- Backend ---
+fastapi==0.115.8
+uvicorn==0.34.0  # Or gunicorn==<version> if you prefer that for the start command
+python-multipart==0.0.20 # Often needed for FastAPI file uploads
+
+# --- LangChain Core & Integrations ---
+langchain>=0.3.23
+langchain-core>=0.3.53
+langchain-community>=0.3.21
+langchain-pinecone # REMOVE version pin initially
+langchain-huggingface>=0.1.2
+langchain-groq>=0.3.2
+langchain-openai>=0.2.14
+langchain-text-splitters>=0.3.8
+
+
+# --- LLM Providers ---
+openai==1.70.0
+groq==0.22.0
+
+# --- Vector Database ---
+pinecone-client>=6.0.0 # Ensure modern client
+
+# --- Embeddings ---
+sentence-transformers>=2.6.1
+torch>=2.6.0
+transformers>=4.0.0
+tokenizers>=0.10.0
+huggingface-hub>=0.20.0
+safetensors>=0.4.0
+
+
+# --- CrewAI ---
+crewai==0.108.0
+crewai-tools==0.40.1
+chromadb==0.5.23
+
+# --- Supabase Auth/DB ---
+supabase
+# Key dependencies of supabase-py (might be installed automatically)
+# gotrue>=2.0.0
+# postgrest>=1.0.0
+# realtime>=2.0.0
+# httpx>=0.20.0 # Often needed by async clients
+
+# --- File Loading ---
+pypdf>=5.4.0
+
+python-dotenv>=1.1.0
+pydantic>=2.7.0 # Update pydantic to align with newer langchain if needed
+pydantic-settings # If used by your Pydantic models
+numpy # Very common dependency for ML/Langchain/Embeddings
+PyYAML # Common config/dependency for Langchain/others
+typing_extensions # Often needed for newer Python typing features used by libraries
+
+# --- Optional but Recommended ---
+# Add gunicorn if using it in your start command:
+# gunicorn==<version>
