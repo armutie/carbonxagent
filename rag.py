@@ -24,7 +24,7 @@ pinecone_client = Pinecone(api_key=PINECONE_API_KEY)
 print("Pinecone client initialized.")
 
 class RAGConfig:
-    EMBEDDING_MODEL = "all-mpnet-base-v2"
+    EMBEDDING_MODEL = "all-MiniLM-L6-v2"
     K = 3
 
 def get_embeddings():
