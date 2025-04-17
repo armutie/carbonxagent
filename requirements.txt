@@ -27,12 +27,12 @@ groq==0.22.0
 pinecone-client>=6.0.0 # Ensure modern client
 
 # --- Embeddings ---
-sentence-transformers>=2.6.1
-torch>=2.6.0
-transformers>=4.0.0
-tokenizers>=0.10.0
-huggingface-hub>=0.20.0
-safetensors>=0.4.0
+# sentence-transformers>=2.6.1
+# torch>=2.6.0
+# transformers>=4.0.0
+# tokenizers>=0.10.0
+# huggingface-hub>=0.20.0
+# safetensors>=0.4.0
 
 
 # --- CrewAI ---
