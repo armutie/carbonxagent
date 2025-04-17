@@ -1,6 +1,9 @@
 import streamlit as st
 import requests
 import time
+import os
+
+BACKEND_URL = os.getenv("BACKEND_URL", "http://127.0.0.1:8000")
 
 def response_generator(prompt, history):
     try:
@@ -15,7 +18,7 @@ def response_generator(prompt, history):
         with placeholder:
             with st.spinner("", show_time=True):
                 headers = {"Authorization": f"Bearer {st.session_state.access_token}"}
-                response = requests.post("http://127.0.0.1:8000/chat", json=payload, headers=headers)
+                response = requests.post(f"{BACKEND_URL}/chat", json=payload, headers=headers)
                 if response.status_code != 200:
                     yield f"Error: {response.json().get('detail', 'Unknown error')}"
                     return
@@ -51,17 +54,15 @@ if "access_token" not in st.session_state:
         signup_button = st.form_submit_button("Sign Up")
         if login_button:
             try:
-                response = requests.post("http://127.0.0.1:8000/login", data={"email": email, "password": password})
+                response = requests.post(f"{BACKEND_URL}/login", data={"email": email, "password": password})
                 if response.status_code == 200:
                     st.session_state.access_token = response.json()["access_token"]
                     st.session_state.user_id = response.json()["user_id"]
                     st.session_state.user_email = response.json()["user_email"]
                     headers = {"Authorization": f"Bearer {st.session_state.access_token}"}
 
-                    # --- Fetch User Role ---
-                    headers = {"Authorization": f"Bearer {st.session_state.access_token}"}
                     try:
-                         role_response = requests.get("http://127.0.0.1:8000/my_role", headers=headers)
+                         role_response = requests.get(f"{BACKEND_URL}/my_role", headers=headers)
                          if role_response.status_code == 200:
                              st.session_state.user_role = role_response.json().get("role", "user") # Default to 'user'
                          else:
@@ -71,8 +72,8 @@ if "access_token" not in st.session_state:
                          st.error(f"Error fetching user role: {role_err}")
                          st.session_state.user_role = "user" # Fallback
 
-                    # --- Fetch history ---
-                    history_response = requests.get("http://127.0.0.1:8000/history", headers=headers)
+                    # --- Fetch history --- (haven't wrapped it in a try block)
+                    history_response = requests.get(f"{BACKEND_URL}/history", headers=headers)
                     if history_response.status_code == 200:
                         st.session_state.messages = history_response.json()["response_content"]
                         if not st.session_state.messages: # Handle empty history
@@ -82,13 +83,17 @@ if "access_token" not in st.session_state:
                         st.session_state.messages = [{"role": "assistant", "content": "Hi! Could not load history."}]
 
                     st.rerun()
+                elif response.status_code == 403: # Approval failed during login
+                    st.error(response.json().get("detail", "Account requires admin approval."))
+                elif response.status_code == 401: # Invalid credentials
+                    st.error(response.json().get("detail", "Invalid email or password."))
                 else:
-                    st.error("Login failed: Invalid email or password")
+                    st.error("Login failed: Cannot access database")
             except requests.RequestException as e:
                 st.error(f"Login error: {str(e)}")
         if signup_button:
             try:
-                response = requests.post("http://127.0.0.1:8000/signup", data={"email": email, "password": password})
+                response = requests.post(f"{BACKEND_URL}/signup", data={"email": email, "password": password})
                 if response.status_code == 200:
                     st.success("Signed up successfully! Please log in.")
                 elif response.status_code == 409: # Check for Conflict
@@ -115,7 +120,7 @@ else:
     else:
         st.sidebar.header(":red[ADMIN PRIVILEGES]")
         try:
-            response = requests.get("http://127.0.0.1:8000/list_files", params={"collection_name": "core_db"})
+            response = requests.get(f"{BACKEND_URL}/list_files", params={"collection_name": "core_db"})
             response.raise_for_status()
             core_files = response.json().get("response_content", [])
             if core_files:
@@ -147,7 +152,7 @@ else:
                     data = {
                         "is_core": is_core_flag
                     }
-                    response = requests.post("http://127.0.0.1:8000/update_vector", files=files, data=data, headers=headers)
+                    response = requests.post(f"{BACKEND_URL}/update_vector", files=files, data=data, headers=headers)
                     if response.status_code == 200:
                         st.session_state.uploaded_files.append(file.file_id)
                         st.session_state.messages.append({"role": "system", "content": f"{file.name} was added to the knowledge base."})

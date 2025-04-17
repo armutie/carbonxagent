@@ -103,9 +103,42 @@ async def get_current_user(authorization: str = Header(...)) -> dict:
     try:
         # get_user() with the service key implicitly verifies the token.
         response = supabase_service.auth.get_user(token)
+        user = response.user
         if not response or not response.user:
              raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token or user not found")
-        return response.user # Return the user object directly
+        
+        try:
+            # Query the user_roles table using the validated user's ID
+            status_response = supabase_service.table("user_roles") \
+                .select("is_approved") \
+                .eq("user_id", str(user.id)) \
+                .single() \
+                .execute()
+
+            # Check if we got data and if the user is approved
+            is_approved = False # Default to not approved
+            if status_response.data:
+                is_approved = status_response.data.get("is_approved", False)
+
+            # If not approved, raise Forbidden error
+            if not is_approved:
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="Account requires admin approval for access. (thru get_current_user)"
+                )
+
+        except HTTPException as he:
+             raise he # Re-raise the 403 if not approved
+        except Exception as db_error:
+             # Handle errors fetching the role/status (e.g., DB connection issue)
+            print(f"Error checking approval status for user {user.id}: {db_error}")
+            # Deny access if status cannot be confirmed
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Could not verify user approval status."
+            )
+
+        return user # Return the user object directly
     except Exception as e:
         # Log the actual error for debugging
         print(f"Token validation error: {e}")
@@ -148,7 +181,8 @@ async def signup(email: str = Form(...), password: str = Form(...)):
             # Use the SERVICE client to insert the role
             insert_response = supabase_service.table("user_roles").insert({
                 "user_id": new_user_id,
-                "role": "user"  # Assign the default role
+                "role": "user",  # Assign the default role
+                "is_approved": False
             }).execute()
 
             # Optional: Check for errors during role insertion
@@ -182,6 +216,31 @@ async def signup(email: str = Form(...), password: str = Form(...)):
 async def login(email: str = Form(...), password: str = Form(...)):
     try:
         response = supabase_anon.auth.sign_in_with_password({"email": email, "password": password})
+        # Bit of a hack, approval doesnt usually happen in login, and sort of makes get_current_user code redundant 
+        try:
+            status_response = supabase_service.table("user_roles") \
+                .select("is_approved") \
+                .eq("user_id", str(response.user.id)) \
+                .single() \
+                .execute()
+
+            is_approved = False
+            if status_response.data:
+                is_approved = status_response.data.get("is_approved", False)
+
+            if not is_approved:
+                # Raise 403 Forbidden HERE if not approved
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="Account requires admin approval for access. (thru login)"
+                )
+
+        except HTTPException as he:
+            raise he # Re-raise 403
+        except Exception as db_error:
+            print(f"Error checking approval status during login for {response.user.id}: {db_error}")
+            raise HTTPException(status_code=500, detail="Could not verify user approval status during login.")
+
         return {
             "status_code": 200,
             "access_token": response.session.access_token,
@@ -191,6 +250,8 @@ async def login(email: str = Form(...), password: str = Form(...)):
     except AuthApiError as e:
          # Common message for invalid login: "Invalid login credentials"
         raise HTTPException(status_code=401, detail=f"Login failed: {e.message}")
+    except HTTPException as he:
+        raise he
     except Exception as e:
         raise HTTPException(status_code=401, detail=str(e))
 
