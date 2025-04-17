@@ -1,7 +1,8 @@
 # rag.py
 import os
 from dotenv import load_dotenv
-from langchain_huggingface import HuggingFaceEmbeddings
+# from langchain_huggingface import HuggingFaceEmbeddings
+from langchain_openai import OpenAIEmbeddings
 from langchain_pinecone import PineconeVectorStore
 from langchain_core.vectorstores import VectorStoreRetriever
 from pinecone import Pinecone # Import the main Pinecone client class
@@ -12,6 +13,7 @@ load_dotenv() # Load env vars early
 # --- Initialize Pinecone Client ---
 PINECONE_API_KEY = os.environ.get("PINECONE_API_KEY")
 PINECONE_INDEX_NAME = os.environ.get("PINECONE_INDEX_NAME")
+OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY") 
 
 if not PINECONE_API_KEY:
     raise ValueError("PINECONE_API_KEY environment variable not set.")
@@ -24,11 +26,14 @@ pinecone_client = Pinecone(api_key=PINECONE_API_KEY)
 print("Pinecone client initialized.")
 
 class RAGConfig:
-    EMBEDDING_MODEL = "all-MiniLM-L6-v2"
+    EMBEDDING_MODEL = "text-embedding-3-small"
     K = 3
 
 def get_embeddings():
-    return HuggingFaceEmbeddings(model_name=RAGConfig.EMBEDDING_MODEL)
+    return OpenAIEmbeddings(
+        model=RAGConfig.EMBEDDING_MODEL,
+        openai_api_key=OPENAI_API_KEY
+    )
 
 def get_vector_store(namespace: str = None) -> PineconeVectorStore:
     """Gets the PineconeVectorStore instance, assuming client is initialized."""
