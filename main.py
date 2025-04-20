@@ -1,4 +1,4 @@
-from fastapi import FastAPI, Form, UploadFile, HTTPException, Depends, Header, status
+from fastapi import FastAPI, Form, UploadFile, HTTPException, Depends, Header, status, Query
 from dotenv import load_dotenv
 from pydantic import BaseModel
 from typing import List, Dict
@@ -448,6 +448,43 @@ async def update_vector(file: UploadFile = None, is_core: str = Form("false"), u
             print(traceback.format_exc())
             raise HTTPException(status_code=500, detail=f"Failed during Pinecone processing: {pinecone_process_error}")
 
+        try:
+            print(f"[UpdateVector] Adding file record to Supabase table 'uploaded_files'...")
+            # Ensure user_id and namespace are the ones determined earlier
+            # Ensure filename is available
+            # Ensure chunked_docs list is available for len()
+
+            insert_data = {
+                "user_id": user_id,       # User who uploaded
+                "filename": filename,     # Name of the file
+                "namespace": namespace,   # 'core_db' or 'user_{user_id}'
+                # Optional fields:
+                # "file_size": file.size, # Get size before reading content if possible
+                "chunk_count": len(chunked_docs)
+            }
+            response = supabase_service.table("uploaded_files").insert(insert_data).execute()
+
+            # More robust error checking for Supabase insert
+            if len(response.data) == 0: # Check if data was actually returned (indicates success)
+                # Attempt to extract error if available (structure might vary)
+                error_message = "Unknown error during Supabase insert"
+                if hasattr(response, 'error') and response.error:
+                    error_message = str(response.error)
+                elif hasattr(response, 'message') and response.message:
+                    error_message = str(response.message)
+
+                print(f"!!! WARNING: Failed to insert file record into Supabase: {error_message} !!!")
+                # Decide how to handle this - maybe don't fail the whole upload? Log it.
+            else:
+                print(f"[UpdateVector] Successfully added record to 'uploaded_files': {response.data}")
+
+        except Exception as supabase_insert_error:
+            print(f"!!! WARNING: Exception inserting file record into Supabase: {supabase_insert_error} !!!")
+            # Log this error but likely continue, as the main upload to Pinecone succeeded.
+            import traceback
+            print(traceback.format_exc())
+        # --- END: Add record to Supabase ---
+
 
         print(f"Finished adding all {len(chunked_docs)} chunks for {filename} to namespace '{namespace}'")
         return {"status_code": 200, "response_content": f"Added {filename} ({len(chunked_docs)} chunks) to namespace '{namespace}'"}
@@ -495,28 +532,49 @@ async def get_my_role(user: dict = Depends(get_current_user)):
     role = "admin" if is_user_admin else "user" # Determine role (can be more complex if >2 roles)
     return {"status_code": 200, "role": role}
 
-# @app.get("/list_files")
-# async def list_files(collection_name: str, user: dict = Depends(get_current_user)):
-#     # Implement security check - only admin can list 'core_db'
-#     is_user_admin = await is_admin(str(user.id))
-#     if collection_name == "core_db" and not is_user_admin:
-#          raise HTTPException(status_code=403, detail="Admin required to list core files")
-#     # Optional: Allow users to list their own files
-#     # elif collection_name != f"user_{user.id}" and not is_user_admin:
-#     #     raise HTTPException(status_code=403, detail="Cannot list files for other users")
+@app.get("/list_files")
+async def list_files(
+    # Use 'namespace' as the query parameter name for clarity,
+    # but we'll map it from 'collection_name' in the frontend call later.
+    namespace: str = Query(..., alias="collection_name"), # Expect 'collection_name' from frontend
+    user: dict = Depends(get_current_user) # Returns Supabase user object
+):
+    user_id = str(user.id) # Get user ID string
 
-#     try:
-#         response = supabase_service.table(RAGConfig.SUPABASE_TABLE_NAME)\
-#             .select("metadata->filename")\
-#             .eq("metadata->>collection_name", collection_name)\
-#             .execute()
+    # Security check: Only admins can list 'core_db' namespace.
+    is_user_admin = await is_admin(user_id)
+    if namespace == "core_db" and not is_user_admin:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Admin required to list core files")
 
-#         if response.data:
-#             # Extract unique filenames
-#             filenames = set(item['filename'] for item in response.data if item.get('filename'))
-#             return {"status_code": 200, "response_content": list(filenames)}
-#         else:
-#             return {"status_code": 200, "response_content": []} # No files found
-#     except Exception as e:
-#          print(f"Error listing files from Supabase: {e}")
-#          raise HTTPException(status_code=500, detail=f"Error listing files: {str(e)}")
+    # RLS policies handle access control automatically for SELECT based on user role and namespace.
+    # Admins can query 'core_db'. Any user can query their own user_{id} namespace (implicitly allowed by RLS).
+    # Users attempting to query another user's namespace will get an empty result due to RLS.
+
+    print(f"User {user_id} attempting to list files for namespace: {namespace}")
+
+    try:
+        response = supabase_service.table("uploaded_files")\
+            .select("filename")\
+            .eq("namespace", namespace)\
+            .order("filename")\
+            .execute()
+
+        # Check for explicit PostgREST errors
+        if hasattr(response, 'error') and response.error:
+            print(f"Supabase error fetching file list: {response.error}")
+            raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Database error fetching file list")
+
+        if response.data:
+            filenames = sorted(list({item['filename'] for item in response.data if item.get('filename')}))
+            print(f"Found filenames for namespace '{namespace}': {filenames}")
+            return {"status_code": 200, "response_content": filenames}
+        else:
+            print(f"No files found in Supabase table for namespace: {namespace}")
+            return {"status_code": 200, "response_content": []} # Return empty list
+
+    except HTTPException as he:
+        raise he 
+    except Exception as e:
+        print(f"Error listing files from Supabase 'uploaded_files' table for namespace '{namespace}': {e}")
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Server error listing files")
+

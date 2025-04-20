@@ -119,19 +119,18 @@ else:
         is_core_flag = "false"
     else:
         st.sidebar.header(":red[ADMIN PRIVILEGES]")
-        # Removing listing feature for now because it's fairly complicated through Pinecone
-        # try:
-        #     response = requests.get(f"{BACKEND_URL}/list_files", params={"collection_name": "core_db"}, headers=headers)
-        #     response.raise_for_status()
-        #     core_files = response.json().get("response_content", [])
-        #     if core_files:
-        #         st.sidebar.subheader("Current Files in Core Knowledge Base")
-        #         for file in core_files:
-        #             st.sidebar.write(f"- {file}")
-        #     else:
-        #         st.sidebar.write("No files in core knowledge base yet.")
-        # except requests.RequestException as e:
-        #     st.sidebar.error(f"Error fetching files: {str(e)}")
+        try:
+            response = requests.get(f"{BACKEND_URL}/list_files", params={"collection_name": "core_db"}, headers=headers)
+            response.raise_for_status()
+            core_files = response.json().get("response_content", [])
+            if core_files:
+                st.sidebar.subheader("Current Files in Core Knowledge Base")
+                for file in core_files:
+                    st.sidebar.write(f"- {file}")
+            else:
+                st.sidebar.write("No files in core knowledge base yet.")
+        except requests.RequestException as e:
+            st.sidebar.error(f"Error fetching files: {str(e)}")
 
         uploaded_files = st.sidebar.file_uploader(
             "Add files to the CORE knowledge base",
