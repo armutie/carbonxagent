@@ -30,8 +30,6 @@ supabase_anon: Client = create_client(SUPABASE_URL, SUPABASE_ANON_KEY)
 
 app = FastAPI()
 
-ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD")
-
 embeddings = get_embeddings()
 core_retriever = get_retriever("core_db")
 

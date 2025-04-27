@@ -37,6 +37,8 @@ def response_generator(prompt, history):
 
 st.title("CarbonXAgent")
 
+if "analysis_complete" not in st.session_state:
+    st.session_state.analysis_complete = False
 if "uploaded_files" not in st.session_state:
     st.session_state.uploaded_files = []
 if "messages" not in st.session_state:
@@ -45,6 +47,8 @@ if "messages" not in st.session_state:
     ]
 if 'user_role' not in st.session_state:
     st.session_state.user_role = None
+
+the_final_answer = ""
 
 if "access_token" not in st.session_state:
     with st.form("login_form"):
@@ -165,7 +169,18 @@ else:
             with st.chat_message(message["role"], avatar=avatar):
                 st.markdown(message["content"])
 
-    if query := st.chat_input("Ask about carbon emissions reduction"):
+        if st.session_state.messages:
+            last_message_content = st.session_state.messages[-1].get("content", "")
+            is_analysis_message = ("Here’s your company’s carbon footprint breakdown:" in last_message_content) # Adjust check if needed
+
+            if is_analysis_message and not st.session_state.analysis_complete:
+                print("Setting analysis_complete = True based on last message.") # Debug
+                st.session_state.analysis_complete = True
+                the_final_answer = last_message_content
+
+
+    if query := st.chat_input("Ask about carbon emissions reduction", disabled=st.session_state.analysis_complete, # Directly use the flag
+        key="chat_input_main"):
         st.session_state.messages.append({"role": "user", "content": query})
         with st.container():
             with st.chat_message("user"):
@@ -174,6 +189,10 @@ else:
                 streamed_response = st.write_stream(response_generator(query, st.session_state.messages))
                 full_response = "".join(streamed_response)
                 st.session_state.messages.append({"role": "assistant", "content": full_response})
+
+# TODO: Need to fix: analysis complete does not work as expected
+    if st.session_state.analysis_complete:
+        st.info("Analysis complete.")
 
     st.sidebar.write(f"Logged in as: {st.session_state.get('user_email', 'Unknown User')}") # Optional: display email
 
